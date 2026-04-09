@@ -1,0 +1,76 @@
+## Initial model finalised
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+import os
+os.makedirs('output', exist_ok=True)
+
+# ── Full pipeline ──────────────────────────────────────────────
+df = pd.read_csv('Leads.csv')
+df = df.replace('Select', np.nan)
+
+drop_cols = [
+    'Prospect ID','Lead Number','City','Specialization','Tags',
+    'What matters most to you in choosing a course',
+    'What is your current occupation','Country','Lead Quality',
+    'Asymmetrique Activity Index','Asymmetrique Profile Index',
+    'Asymmetrique Activity Score','Asymmetrique Profile Score',
+    'Last Notable Activity'
+]
+df.drop(columns=[c for c in drop_cols if c in df.columns], inplace=True)
+
+num_cols = df.select_dtypes(include='number').columns.tolist()
+cat_cols = df.select_dtypes(include='object').columns.tolist()
+if 'Converted' in num_cols:
+    num_cols.remove('Converted')
+
+for c in num_cols: df[c].fillna(df[c].median(), inplace=True)
+for c in cat_cols: df[c].fillna(df[c].mode()[0], inplace=True)
+
+df = pd.get_dummies(df, drop_first=True)
+X = df.drop('Converted', axis=1)
+y = df['Converted']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, stratify=y, random_state=42)
+
+num_feat = [c for c in num_cols if c in X_train.columns]
+scaler = StandardScaler()
+X_train[num_feat] = scaler.fit_transform(X_train[num_feat])
+X_test[num_feat]  = scaler.transform(X_test[num_feat])
+
+model = LogisticRegression(max_iter=2000, class_weight='balanced')
+model.fit(X_train, y_train)
+
+# ── Make predictions ───────────────────────────────────────────
+conversion_probability = model.predict_proba(X_test)[:, 1]  # 0.0 to 1.0
+predicted_label        = model.predict(X_test)               # 0 or 1
+actual_label           = y_test.values
+
+# Build a readable results table
+results_df = pd.DataFrame({
+    'Actual':      actual_label,
+    'Predicted':   predicted_label,
+    'Probability': np.round(conversion_probability, 3),
+    'Correct':     actual_label == predicted_label
+})
+
+# Show 10 sample predictions
+print("Sample predictions from test set:")
+print(results_df.sample(10, random_state=1).to_string(index=False))
+
+# Summary
+print(f"\nTotal test leads:       {len(results_df)}")
+print(f"Predicted converted:    {results_df['Predicted'].sum()} "
+      f"({results_df['Predicted'].mean()*100:.1f}%)")
+print(f"Actually converted:     {results_df['Actual'].sum()} "
+      f"({results_df['Actual'].mean()*100:.1f}%)")
+print(f"Correct predictions:    {results_df['Correct'].sum()} "
+      f"({results_df['Correct'].mean()*100:.1f}%)")
+
+# Save full scored output
+results_df.to_csv('output/test_set_predictions.csv', index=False)
+print("\nFull predictions saved → output/test_set_predictions.csv")

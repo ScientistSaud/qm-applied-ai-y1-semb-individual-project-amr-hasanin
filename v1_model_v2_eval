@@ -1,0 +1,134 @@
+# This is a more accurate evaluation of the initial code
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, confusion_matrix, classification_report, roc_curve
+)
+import matplotlib.pyplot as plt
+import os
+
+os.makedirs('output', exist_ok=True)
+
+df = pd.read_csv('Leads.csv')
+df = df.replace('Select', np.nan)
+
+drop_cols = [
+    'Prospect ID',
+    'Lead Number',
+    'City',
+    'Specialization',
+    'Tags',
+    'What matters most to you in choosing a course',
+    'What is your current occupation',
+    'Country',
+    'Lead Quality',
+    'Asymmetrique Activity Index',
+    'Asymmetrique Profile Index',
+    'Asymmetrique Activity Score',
+    'Asymmetrique Profile Score',
+    'Last Notable Activity'
+]
+
+existing_drop = [c for c in drop_cols if c in df.columns]
+work = df.drop(columns=existing_drop).copy()
+
+print('Dropped columns:')
+print(existing_drop)
+print('\nShape after dropping:', work.shape)
+print('\nRemaining missing counts (top 15):')
+print(work.isnull().sum().sort_values(ascending=False).head(15))
+print('\nRemaining columns:')
+print(work.columns.tolist())
+
+num_cols = work.select_dtypes(include=np.number).columns.tolist()
+cat_cols = work.select_dtypes(exclude=np.number).columns.tolist()
+if 'Converted' in num_cols:
+    num_cols.remove('Converted')
+
+for col in num_cols:
+    work[col] = work[col].fillna(work[col].median())
+for col in cat_cols:
+    work[col] = work[col].fillna(work[col].mode()[0])
+
+encoded = pd.get_dummies(work, drop_first=True)
+print('\nEncoded shape:', encoded.shape)
+
+X = encoded.drop(columns=['Converted'])
+y = encoded['Converted']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.30, random_state=42, stratify=y
+)
+
+print('\nSplit shapes:')
+print('X_train:', X_train.shape, 'X_test:', X_test.shape)
+print('y_train:', y_train.shape, 'y_test:', y_test.shape)
+print('\nTrain target distribution:')
+print(y_train.value_counts(normalize=True))
+print('\nTest target distribution:')
+print(y_test.value_counts(normalize=True))
+
+numeric_cols = X_train.select_dtypes(include=np.number).columns.tolist()
+scaler = StandardScaler()
+X_train_s = X_train.copy()
+X_test_s = X_test.copy()
+X_train_s[numeric_cols] = scaler.fit_transform(X_train[numeric_cols])
+X_test_s[numeric_cols] = scaler.transform(X_test[numeric_cols])
+
+model = LogisticRegression(max_iter=2000, class_weight='balanced')
+model.fit(X_train_s, y_train)
+
+train_prob = model.predict_proba(X_train_s)[:, 1]
+test_prob = model.predict_proba(X_test_s)[:, 1]
+train_pred = (train_prob >= 0.5).astype(int)
+test_pred = (test_prob >= 0.5).astype(int)
+
+metrics = {
+    'train_auc': roc_auc_score(y_train, train_prob),
+    'test_auc': roc_auc_score(y_test, test_prob),
+    'train_accuracy': accuracy_score(y_train, train_pred),
+    'test_accuracy': accuracy_score(y_test, test_pred),
+    'train_precision': precision_score(y_train, train_pred, zero_division=0),
+    'test_precision': precision_score(y_test, test_pred, zero_division=0),
+    'train_recall': recall_score(y_train, train_pred, zero_division=0),
+    'test_recall': recall_score(y_test, test_pred, zero_division=0),
+    'train_f1': f1_score(y_train, train_pred, zero_division=0),
+    'test_f1': f1_score(y_test, test_pred, zero_division=0),
+}
+
+print('\nMetrics:')
+for k, v in metrics.items():
+    print(f'{k}: {v:.4f}')
+
+print('\nConfusion matrix (test):')
+print(confusion_matrix(y_test, test_pred))
+
+print('\nClassification report (test):')
+print(classification_report(y_test, test_pred, zero_division=0))
+
+fpr, tpr, thresholds = roc_curve(y_test, test_prob)
+plt.figure(figsize=(6, 5))
+plt.plot(fpr, tpr, label=f'AUC = {metrics["test_auc"]:.3f}')
+plt.plot([0, 1], [0, 1], linestyle='--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve - Early-Stage Logistic Regression')
+plt.legend()
+plt.tight_layout()
+plt.savefig('output/early_stage_roc.png', dpi=200, bbox_inches='tight')
+plt.show()
+
+coef = pd.DataFrame({'feature': X_train_s.columns, 'coef': model.coef_[0]}).sort_values('coef', ascending=False)
+print('\nTop 12 positive coefficients:')
+print(coef.head(12).to_string(index=False))
+print('\nTop 12 negative coefficients:')
+print(coef.tail(12).sort_values('coef').to_string(index=False))
+
+pd.DataFrame([metrics]).to_csv('output/early_stage_logreg_metrics.csv', index=False)
+coef.to_csv('output/early_stage_logreg_coefficients.csv', index=False)
+print('\nSaved outputs in output/')
